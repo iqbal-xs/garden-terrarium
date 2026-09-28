@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src {{cspSource}} data:; style-src 'unsafe-inline'; script-src 'nonce-{{nonce}}';">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Garden Terrarium</title>
+<style>
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+  body { background: transparent; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    font: 10px var(--vscode-font-family, sans-serif);
+    color: var(--vscode-descriptionForeground, #888);
+    text-align: center; padding: 3px 0 4px;
+    opacity: 0; transition: opacity .25s ease; pointer-events: none;
+    background: linear-gradient(to top, rgba(0,0,0,.25), transparent);
+  }
+  body:hover #hint { opacity: .85; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="hint">click to shoo &middot; double-click for a butterfly</div>
+
+<script nonce="{{nonce}}">
+(function () {
+  'use strict';
+
+  const vscode = acquireVsCodeApi();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const TAU = Math.PI * 2;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  let W = 300, H = 600, DPR = 1;
+  let groundY = 500;
+  let dark = true;
+
+  const cfg = {
+    butterflies: 3, grasshoppers: 2, caterpillars: 2,
+    ladybugs: 2, bees: 1, fireflies: true, speed: 1
+  };
+
+  let running = true;      // motion toggle (user)
+  let visible = true;      // view visibility (VS Code)
+  let time = 0;
+
+  const flowers = [];
+  const blades = [];
+  const motes = [];
+  const creatures = [];
+
+  /* ---------------------------------------------------------------- palette */
+
+  function palette() {
+    return dark ? {
+      skyTop: '#101a24', skyBot: '#172a2b',
+      soil: '#1c1710', soilDark: '#120e09',
+      grass: ['#2f5d3a', '#356b41', '#28513a', '#3c7a4a'],
+      stem: '#3a6b45',
+      mote: 'rgba(200, 255, 190, 0.5)'
+    } : {
+      skyTop: '#cfe9f5', skyBot: '#e8f6df',
+      soil: '#6b4f36', soilDark: '#543c28',
+      grass: ['#4e9b52', '#5cae5c', '#438a49', '#69bd63'],
+      stem: '#4c9152',
+      mote: 'rgba(255, 250, 210, 0.75)'
+    };
+  }
+  let P = palette();
+
+  /* ------------------------------------------------------------------ scene */
+
+  function buildScene() {
+    blades.length = 0;
+    flowers.length = 0;
+    motes.length = 0;
+
+    const bladeCount = Math.round(clamp(W / 7, 18, 70));
+    for (let i = 0; i < bladeCount; i++) {
+      blades.push({
+        x: rand(-6, W + 6),
+        h: rand(H * 0.05, H * 0.15),
+        lean: rand(-0.5, 0.5),
+        w: rand(1.6, 3.4),
+        phase: rand(0, TAU),
+        color: pick(P.grass),
+        depth: Math.random()
+      });
+    }
+    blades.sort((a, b) => a.depth - b.depth);
+
+    const flowerCount = Math.round(clamp(W / 55, 2, 7));
+    for (let i = 0; i < flowerCount; i++) {
+      flowers.push(makeFlower(rand(14, W - 14)));
+    }
+
+    if (cfg.fireflies) {
+      const n = Math.round(clamp(W / 18, 6, 24));
+      for (let i = 0; i < n; i++) {
+        motes.push({
+          x: rand(0, W), y: rand(0, groundY),
+          vx: rand(-0.12, 0.12), vy: rand(-0.1, 0.05),
+          r: rand(0.8, 1.9), phase: rand(0, TAU), rate: rand(0.6, 1.8)
+        });
+      }
+    }
+  }
+
+  function makeFlower(x) {
+    const petals = [
+      ['#e77fa8', '#f7c4d8'], ['#f0c05a', '#ffe6a3'], ['#a78bd8', '#d9c8f2'],
+      ['#e9705f', '#f8b9ae'], ['#eaeaea', '#ffffff'], ['#7fb8e7', '#c9e4f8']
+    ];
+    const c = pick(petals);
+    return {
+      x,
+      h: rand(H * 0.10, H * 0.24),
+      phase: rand(0, TAU),
+      r: rand(4.5, 7.5),
+      petals: 5 + ((Math.random() * 3) | 0),
+      c1: c[0], c2: c[1],
+      curve: rand(-0.35, 0.35)
+    };
+  }
+
+  // Current (wind-swayed) position of a flower head.
+  function flowerHead(f) {
+    const sway = Math.sin(time * 0.7 + f.phase) * (f.h * 0.06) + f.curve * f.h * 0.25;
+    return { x: f.x + sway, y: groundY - f.h };
+  }
+
+  /* -------------------------------------------------------------- creatures */
+
+  function makeButterfly(x, y) {
+    const skins = [
+      ['#f2a03d', '#c9611f', '#2b1a10'],
+      ['#7fb3ea', '#3f6fb5', '#17223a'],
+      ['#e88fc5', '#b8548f', '#33162a'],
+      ['#f6e07a', '#d9a93a', '#3a2d10'],
+      ['#b6e5c4', '#5fae82', '#16311f']
+    ];
+    const s = pick(skins);
+    return {
+      kind: 'butterfly', z: 2,
+      x: x != null ? x : rand(20, W - 20),
+      y: y != null ? y : rand(H * 0.1, groundY - 40),
+      vx: rand(-0.4, 0.4), vy: rand(-0.3, 0.3),
+      tx: rand(20, W - 20), ty: rand(H * 0.08, groundY - 30),
+      size: rand(5.5, 8.5),
+      flap: rand(0, TAU), flapRate: rand(9, 13),
+      c1: s[0], c2: s[1], c3: s[2],
+      mode: 'fly', rest: 0, flower: null,
+      bob: rand(0, TAU)
+    };
+  }
+
+  function makeBee(x, y) {
+    return {
+      kind: 'bee', z: 2,
+      x: x != null ? x : rand(20, W - 20),
+      y: y != null ? y : rand(H * 0.15, groundY - 50),
+      vx: 0, vy: 0,
+      tx: rand(20, W - 20), ty: rand(H * 0.15, groundY - 40),
+      size: rand(3.2, 4.4),
+      flap: rand(0, TAU),
+      mode: 'fly', rest: 0, flower: null, jitter: rand(0, TAU)
+    };
+  }
+
+  function makeGrasshopper(x) {
+    return {
+      kind: 'grasshopper', z: 1,
+      x: x != null ? x : rand(20, W - 20),
+      y: groundY - 2,
+      vx: 0, vy: 0,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      size: rand(4.5, 6.5),
+      mode: 'idle', timer: rand(1, 3), crouch: 0,
+      color: pick(['#5b8f3a', '#6ea145', '#4e7f33', '#7fa84c'])
+    };
+  }
+
+  function makeCaterpillar(x) {
+    const n = 7 + ((Math.random() * 4) | 0);
+    const seg = [];
+    const sx = x != null ? x : rand(20, W - 20);
+    for (let i = 0; i < n; i++) seg.push({ x: sx, y: groundY - 3 });
+    return {
+      kind: 'caterpillar', z: 1,
+      x: sx, y: groundY - 3,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      seg, spacing: rand(2.6, 3.6),
+      size: rand(2.4, 3.4),
+      phase: rand(0, TAU), rate: rand(3.2, 4.6),
+      c1: pick(['#8fbf46', '#c9d94e', '#6fae52', '#d9a03c']),
+      c2: '#3f5a22',
+      timer: rand(3, 8)
+    };
+  }
+
+  function makeLadybug(x) {
+    return {
+      kind: 'ladybug', z: 1,
+      x: x != null ? x : rand(20, W - 20),
+      y: groundY - 2,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      size: rand(3.2, 4.4),
+      speed: rand(0.18, 0.38),
+      mode: 'walk', timer: rand(1.5, 4),
+      legPhase: rand(0, TAU),
+      spots: 3 + ((Math.random() * 3) | 0),
+      wobble: rand(0, TAU)
+    };
+  }
+
+  const FACTORY = {
+    butterfly: makeButterfly, bee: makeBee, grasshopper: makeGrasshopper,
+    caterpillar: makeCaterpillar, ladybug: makeLadybug,
+    // Species the text habitats know about, mapped to the nearest drawn body.
+    ant: makeLadybug, beetle: makeLadybug, spider: makeLadybug,
+    snail: makeCaterpillar, cricket: makeGrasshopper
+  };
+
+  function populate() {
+    creatures.length = 0;
+    for (let i = 0; i < cfg.butterflies; i++) creatures.push(makeButterfly());
+    for (let i = 0; i < cfg.bees; i++) creatures.push(makeBee());
+    for (let i = 0; i < cfg.grasshoppers; i++) creatures.push(makeGrasshopper());
+    for (let i = 0; i < cfg.caterpillars; i++) creatures.push(makeCaterpillar());
+    for (let i = 0; i < cfg.ladybugs; i++) creatures.push(makeLadybug());
+  }
+
+  /* ----------------------------------------------------------------- update */
+
+  function update(dt) {
+    time += dt;
+    for (const c of creatures) {
+      if (c.kind === 'butterfly') updateButterfly(c, dt);
+      else if (c.kind === 'bee') updateBee(c, dt);
+      else if (c.kind === 'grasshopper') updateGrasshopper(c, dt);
+      else if (c.kind === 'caterpillar') updateCaterpillar(c, dt);
+      else if (c.kind === 'ladybug') updateLadybug(c, dt);
+    }
+    for (const m of motes) {
+      m.x += m.vx * dt * 30;
+      m.y += m.vy * dt * 30;
+      m.vx = clamp(m.vx + rand(-0.01, 0.01), -0.2, 0.2);
+      m.vy = clamp(m.vy + rand(-0.01, 0.01), -0.2, 0.2);
+      m.phase += dt * m.rate;
+      if (m.x < -5) m.x = W + 5;
+      if (m.x > W + 5) m.x = -5;
+      if (m.y < -5) m.y = groundY;
+      if (m.y > groundY) m.y = -5;
+    }
+  }
+
+  function updateButterfly(b, dt) {
+    b.flap += dt * b.flapRate * (b.mode === 'rest' ? 0.22 : 1);
+    b.bob += dt * 2.4;
+
+    if (b.mode === 'rest') {
+      b.rest -= dt;
+      if (b.flower) {
+        const h = flowerHead(b.flower);
+        b.x = h.x; b.y = h.y - b.size * 0.9;
+      }
+      if (b.rest <= 0) {
+        b.mode = 'fly'; b.flower = null;
+        b.vy = -0.6; retarget(b);
+      }
+      return;
+    }
+
+    // Wander: steer gently toward the target, never in a straight line.
+    const dx = b.tx - b.x, dy = b.ty - b.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const accel = 0.055;
+    b.vx += (dx / d) * accel + rand(-0.035, 0.035);
+    b.vy += (dy / d) * accel + rand(-0.045, 0.045) - 0.012; // slight lift
+    const sp = Math.hypot(b.vx, b.vy);
+    const max = 1.15;
+    if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
+
+    const k = dt * 60;
+    b.x += b.vx * k;
+    b.y += b.vy * k + Math.sin(b.bob) * 0.28 * k;
+
+    if (b.x < 6) { b.x = 6; b.vx = Math.abs(b.vx); retarget(b); }
+    if (b.x > W - 6) { b.x = W - 6; b.vx = -Math.abs(b.vx); retarget(b); }
+    if (b.y < 8) { b.y = 8; b.vy = Math.abs(b.vy); }
+    if (b.y > groundY - 6) { b.y = groundY - 6; b.vy = -Math.abs(b.vy); }
+
+    if (d < 12) {
+      if (b.flower) {                       // arrived at a flower -> land
+        b.mode = 'rest'; b.rest = rand(2.5, 7); b.vx = b.vy = 0;
+      } else retarget(b);
+    }
+  }
+
+  function retarget(b) {
+    if (flowers.length && Math.random() < 0.35) {
+      b.flower = pick(flowers);
+      const h = flowerHead(b.flower);
+      b.tx = h.x; b.ty = h.y - b.size * 0.9;
+    } else {
+      b.flower = null;
+      b.tx = rand(12, W - 12);
+      b.ty = rand(H * 0.06, groundY - 25);
+    }
+  }
+
+  function updateBee(b, dt) {
+    b.flap += dt * 40;
+    b.jitter += dt * 9;
+
+    if (b.mode === 'rest') {
+      b.rest -= dt;
+      if (b.flower) {
+        const h = flowerHead(b.flower);
+        b.x = h.x + Math.sin(b.jitter) * 1.2;
+        b.y = h.y - b.size * 1.1 + Math.cos(b.jitter * 1.3) * 1.2;
+      }
+      if (b.rest <= 0) { b.mode = 'fly'; beeTarget(b); }
+      return;
+    }
+
+    const dx = b.tx - b.x, dy = b.ty - b.y;
+    const d = Math.hypot(dx, dy) || 1;
+    b.vx = lerp(b.vx, (dx / d) * 1.5, 0.08) + Math.sin(b.jitter) * 0.06;
+    b.vy = lerp(b.vy, (dy / d) * 1.5, 0.08) + Math.cos(b.jitter * 1.4) * 0.06;
+
+    const k = dt * 60;
+    b.x = clamp(b.x + b.vx * k, 5, W - 5);
+    b.y = clamp(b.y + b.vy * k, 6, groundY - 5);
+
+    if (d < 8) {
+      if (b.flower) { b.mode = 'rest'; b.rest = rand(1.2, 3.5); }
+      else beeTarget(b);
+    }
+  }
+
+  function beeTarget(b) {
+    if (flowers.length && Math.random() < 0.7) {
+      b.flower = pick(flowers);
+      const h = flowerHead(b.flower);
+      b.tx = h.x; b.ty = h.y - b.size * 1.1;
+    } else {
+      b.flower = null;
+      b.tx = rand(12, W - 12);
+      b.ty = rand(H * 0.1, groundY - 20);
+    }
+  }
+
+  function updateGrasshopper(g, dt) {
+    const k = dt * 60;
+
+    if (g.mode === 'jump') {
+      g.vy += 0.33 * k;              // gravity
+      g.x += g.vx * k;
+      g.y += g.vy * k;
+      if (g.x < 6 || g.x > W - 6) { g.vx *= -1; g.x = clamp(g.x, 6, W - 6); g.dir = g.vx < 0 ? -1 : 1; }
+      if (g.y >= groundY - 2) {
+        g.y = groundY - 2; g.vx = 0; g.vy = 0;
+        g.mode = 'idle'; g.timer = rand(1.2, 4.5); g.crouch = 0;
+      }
+      return;
+    }
+
+    if (g.mode === 'crouch') {
+      g.crouch = Math.min(1, g.crouch + dt * 5);
+      g.timer -= dt;
+      if (g.timer <= 0) {
+        g.mode = 'jump';
+        g.vx = g.dir * rand(1.6, 3.4);
+        g.vy = -rand(4.2, 6.4);
+        g.crouch = 0;
+      }
+      return;
+    }
+
+    // idle: sit, sometimes turn, then wind up for a hop
+    g.timer -= dt;
+    if (g.timer <= 0) {
+      if (Math.random() < 0.25) { g.dir *= -1; g.timer = rand(0.6, 1.6); }
+      else { g.mode = 'crouch'; g.timer = rand(0.25, 0.5); }
+    }
+    if (g.x < 10) g.dir = 1;
+    if (g.x > W - 10) g.dir = -1;
+  }
+
+  function updateCaterpillar(c, dt) {
+    c.phase += dt * c.rate;
+    c.timer -= dt;
+    if (c.timer <= 0) { c.dir *= -1; c.timer = rand(5, 12); }
+
+    // Inch along: the head surges and stalls, so the body bunches and stretches.
+    const surge = Math.max(0, Math.sin(c.phase));
+    const step = surge * surge * 0.425 * dt * 60;
+    c.x += c.dir * step;
+    if (c.x < 8) { c.x = 8; c.dir = 1; }
+    if (c.x > W - 8) { c.x = W - 8; c.dir = -1; }
+    c.y = groundY - 3 - Math.abs(Math.sin(c.phase)) * 0.8;
+
+    const head = c.seg[0];
+    head.x = c.x; head.y = c.y;
+    for (let i = 1; i < c.seg.length; i++) {
+      const p = c.seg[i - 1], s = c.seg[i];
+      const dx = s.x - p.x, dy = s.y - p.y;
+      const d = Math.hypot(dx, dy) || 0.0001;
+      // Pull each segment toward the one ahead; the lag is what makes it ripple.
+      const t = (d - c.spacing) / d;
+      s.x -= dx * t * 0.55;
+      s.y -= dy * t * 0.55;
+      s.y = lerp(s.y, groundY - 3 - Math.abs(Math.sin(c.phase - i * 0.55)) * 1.6, 0.35);
+    }
+  }
+
+  function updateLadybug(l, dt) {
+    l.legPhase += dt * 12;
+    l.wobble += dt * 3;
+    l.timer -= dt;
+
+    if (l.mode === 'walk') {
+      l.x += l.dir * l.speed * dt * 60;
+      if (l.x < 8) { l.x = 8; l.dir = 1; }
+      if (l.x > W - 8) { l.x = W - 8; l.dir = -1; }
+      if (l.timer <= 0) { l.mode = 'pause'; l.timer = rand(0.6, 2.2); }
+    } else if (l.timer <= 0) {
+      l.mode = 'walk';
+      l.timer = rand(2, 6);
+      if (Math.random() < 0.45) l.dir *= -1;
+    }
+    l.y = groundY - 2 + Math.sin(l.legPhase) * 0.25;
+  }
+
+  /* ------------------------------------------------------------------- draw */
+
+  function draw() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+    sky.addColorStop(0, P.skyTop);
+    sky.addColorStop(1, P.skyBot);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, groundY + 1);
+
+    const soil = ctx.createLinearGradient(0, groundY, 0, H);
+    soil.addColorStop(0, P.soil);
+    soil.addColorStop(1, P.soilDark);
+    ctx.fillStyle = soil;
+    ctx.fillRect(0, groundY, W, H - groundY);
+
+    for (const m of motes) {
+      const a = 0.25 + 0.75 * (0.5 + 0.5 * Math.sin(m.phase));
+      ctx.globalAlpha = a;
+      ctx.fillStyle = P.mote;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r, 0, TAU);
+      ctx.fill();
+      if (dark) {
+        ctx.globalAlpha = a * 0.25;
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.r * 3.4, 0, TAU);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    const mid = (blades.length / 2) | 0;
+    for (let i = 0; i < mid; i++) drawBlade(blades[i], 0.55);
+
+    for (const f of flowers) drawFlower(f);
+
+    const sorted = creatures.slice().sort((a, b) => a.z - b.z);
+    for (const c of sorted) {
+      if (c.kind === 'caterpillar') drawCaterpillar(c);
+      else if (c.kind === 'ladybug') drawLadybug(c);
+      else if (c.kind === 'grasshopper') drawGrasshopper(c);
+      else if (c.kind === 'butterfly') drawButterfly(c);
+      else if (c.kind === 'bee') drawBee(c);
+    }
+
+    // front grass overlaps the walkers a little -> depth
+    for (let i = mid; i < blades.length; i++) drawBlade(blades[i], 1);
+
+    ctx.strokeStyle = dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, groundY + 0.5);
+    ctx.lineTo(W, groundY + 0.5);
+    ctx.stroke();
+  }
+
+  function drawBlade(b, alpha) {
+    const sway = Math.sin(time * 0.9 + b.phase) * (b.h * 0.09) + b.lean * b.h * 0.3;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = b.w;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(b.x, groundY + 2);
+    ctx.quadraticCurveTo(b.x + sway * 0.4, groundY - b.h * 0.55, b.x + sway, groundY - b.h);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawFlower(f) {
+    const head = flowerHead(f);
+    ctx.strokeStyle = P.stem;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(f.x, groundY + 1);
+    ctx.quadraticCurveTo(f.x + (head.x - f.x) * 0.3, groundY - f.h * 0.5, head.x, head.y);
+    ctx.stroke();
+
+    ctx.fillStyle = P.stem;
+    ctx.beginPath();
+    ctx.ellipse(f.x + (head.x - f.x) * 0.35 + 3, groundY - f.h * 0.45, 4.5, 2, -0.5, 0, TAU);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(head.x, head.y);
+    ctx.rotate(Math.sin(time * 0.7 + f.phase) * 0.12);
+    for (let i = 0; i < f.petals; i++) {
+      ctx.rotate(TAU / f.petals);
+      const g = ctx.createLinearGradient(0, 0, 0, -f.r * 1.7);
+      g.addColorStop(0, f.c1);
+      g.addColorStop(1, f.c2);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(0, -f.r * 0.95, f.r * 0.52, f.r * 0.95, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.fillStyle = dark ? '#d9c15f' : '#f7d84a';
+    ctx.beginPath();
+    ctx.arc(head.x, head.y, f.r * 0.42, 0, TAU);
+    ctx.fill();
+  }
+
+  function drawButterfly(b) {
+    const flap = Math.abs(Math.cos(b.flap));            // 0 = folded, 1 = open
+    const open = b.mode === 'rest' ? 0.25 + flap * 0.35 : 0.15 + flap * 0.85;
+    const ang = b.mode === 'rest' ? 0 : Math.atan2(b.vy, b.vx) * 0.25;
+    const s = b.size;
+
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(ang);
+
+    for (const side of [-1, 1]) {
+      ctx.save();
+      ctx.scale(side * open, 1);
+      const g = ctx.createLinearGradient(0, 0, s * 1.5, 0);
+      g.addColorStop(0, b.c2);
+      g.addColorStop(1, b.c1);
+      ctx.fillStyle = g;
+      ctx.beginPath();                                   // fore wing
+      ctx.ellipse(s * 0.75, -s * 0.45, s * 0.85, s * 0.6, -0.35, 0, TAU);
+      ctx.fill();
+      ctx.beginPath();                                   // hind wing
+      ctx.ellipse(s * 0.6, s * 0.42, s * 0.62, s * 0.48, 0.4, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = b.c3;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    ctx.fillStyle = b.c3;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, s * 0.18, s * 0.72, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = b.c3;
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.05, -s * 0.6); ctx.lineTo(-s * 0.35, -s * 1.1);
+    ctx.moveTo(s * 0.05, -s * 0.6);  ctx.lineTo(s * 0.35, -s * 1.1);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBee(b) {
+    const s = b.size;
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(clamp(Math.atan2(b.vy, b.vx) * 0.3, -0.5, 0.5));
+
+    const blur = 0.35 + Math.abs(Math.sin(b.flap)) * 0.65;
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = dark ? '#cfe8ff' : '#ffffff';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(-s * 0.1, side * s * 0.75 * blur, s * 0.9, s * 0.4, side * 0.4, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = '#f2c33c';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, s * 1.15, s * 0.72, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#25201a';
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.ellipse(i * s * 0.45 - s * 0.1, 0, s * 0.16, s * 0.68, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(s * 0.95, 0, s * 0.42, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawGrasshopper(g) {
+    const s = g.size;
+    const squash = 1 - g.crouch * 0.35;
+    const airborne = g.mode === 'jump';
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    ctx.scale(g.dir, 1);
+    if (airborne) ctx.rotate(-clamp(g.vy * 0.06, -0.6, 0.6));
+
+    // hind leg: folded when grounded, extended in flight
+    ctx.strokeStyle = g.color;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    if (airborne) {
+      ctx.moveTo(-s * 0.2, -s * 0.5 * squash);
+      ctx.lineTo(-s * 1.6, -s * 0.1);
+      ctx.lineTo(-s * 2.3, s * 0.5);
+    } else {
+      ctx.moveTo(-s * 0.2, -s * 0.5 * squash);
+      ctx.lineTo(-s * 1.1, -s * 1.1 * squash);
+      ctx.lineTo(-s * 1.35, s * 0.1);
+    }
+    ctx.stroke();
+
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(s * 0.3, -s * 0.4 * squash); ctx.lineTo(s * 0.7, 0);
+    ctx.moveTo(s * 0.05, -s * 0.4 * squash); ctx.lineTo(s * 0.25, 0);
+    ctx.stroke();
+
+    ctx.fillStyle = g.color;
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.15, -s * 0.72 * squash, s, s * 0.42 * squash, -0.12, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.18)';
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.45, -s * 0.78 * squash, s * 0.68, s * 0.26 * squash, -0.12, 0, TAU);
+    ctx.fill();
+
+    ctx.fillStyle = g.color;
+    ctx.beginPath();
+    ctx.arc(s * 0.82, -s * 0.85 * squash, s * 0.36, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#12180e';
+    ctx.beginPath();
+    ctx.arc(s * 0.95, -s * 0.92 * squash, s * 0.13, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = g.color;
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(s, -s * 1.05 * squash);
+    ctx.quadraticCurveTo(s * 1.8, -s * 1.7, s * 2.2, -s * 1.35);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCaterpillar(c) {
+    const n = c.seg.length;
+    for (let i = n - 1; i >= 0; i--) {
+      const s = c.seg[i];
+      const taper = i === 0 ? 1.12 : 1 - (i / n) * 0.35;
+      const r = c.size * taper;
+      ctx.fillStyle = i % 2 === 0 ? c.c1 : c.c2;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, TAU);
+      ctx.fill();
+      if (i > 0 && i % 2 === 0) {                       // little legs
+        ctx.strokeStyle = c.c2;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y + r * 0.6);
+        ctx.lineTo(s.x - 1.2, s.y + r * 1.5);
+        ctx.moveTo(s.x, s.y + r * 0.6);
+        ctx.lineTo(s.x + 1.2, s.y + r * 1.5);
+        ctx.stroke();
+      }
+    }
+    const h = c.seg[0];
+    ctx.fillStyle = '#1c1c14';
+    ctx.beginPath();
+    ctx.arc(h.x + c.dir * c.size * 0.5, h.y - c.size * 0.25, c.size * 0.22, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = c.c2;
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(h.x + c.dir * c.size * 0.4, h.y - c.size * 0.8);
+    ctx.lineTo(h.x + c.dir * c.size, h.y - c.size * 1.7);
+    ctx.stroke();
+  }
+
+  function drawLadybug(l) {
+    const s = l.size;
+    ctx.save();
+    ctx.translate(l.x, l.y);
+    ctx.scale(l.dir, 1);
+    ctx.rotate(Math.sin(l.wobble) * 0.06);
+
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 0.9;
+    ctx.lineCap = 'round';
+    const moving = l.mode === 'walk' ? 1 : 0;
+    for (let i = -1; i <= 1; i++) {
+      const sw = Math.sin(l.legPhase + i * 2.1) * 1.4 * moving;
+      ctx.beginPath();
+      ctx.moveTo(i * s * 0.5, s * 0.25);
+      ctx.lineTo(i * s * 0.5 + sw, s * 1.15);
+      ctx.moveTo(i * s * 0.5, s * 0.1);
+      ctx.lineTo(i * s * 0.5 - sw * 0.7, s * 0.95);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#161616';
+    ctx.beginPath();
+    ctx.arc(s * 0.85, 0, s * 0.48, 0, TAU);
+    ctx.fill();
+
+    const g = ctx.createRadialGradient(-s * 0.2, -s * 0.5, s * 0.1, 0, 0, s * 1.3);
+    g.addColorStop(0, '#f4665a');
+    g.addColorStop(1, '#b6231d');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, s * 1.05, s * 0.9, 0, 0, TAU);
+    ctx.fill();
+
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.95, 0);
+    ctx.lineTo(s * 0.5, 0);
+    ctx.stroke();
+
+    ctx.fillStyle = '#141414';
+    for (let i = 0; i < l.spots; i++) {
+      const a = (i / l.spots) * TAU + 0.8;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * s * 0.5 - s * 0.15, Math.sin(a) * s * 0.42, s * 0.19, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------- loop */
+
+  let last = 0;
+  let raf = 0;
+
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    if (!last) last = now;
+    let dt = (now - last) / 1000;
+    last = now;
+    dt = Math.min(dt, 0.05) * cfg.speed;          // clamp after a stall
+    if (running && visible) update(dt);
+    draw();
+  }
+
+  function start() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } }
+  function stop() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+
+  /* ------------------------------------------------------------ interaction */
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    W = Math.max(80, Math.round(r.width));
+    H = Math.max(120, Math.round(r.height));
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    groundY = Math.round(H * 0.84);
+    buildScene();
+    for (const c of creatures) {
+      c.x = clamp(c.x, 8, W - 8);
+      if (c.kind === 'grasshopper' || c.kind === 'ladybug') c.y = groundY - 2;
+      if (c.kind === 'caterpillar') {
+        for (const s of c.seg) { s.x = clamp(s.x, 8, W - 8); s.y = groundY - 3; }
+      }
+      if (c.kind === 'butterfly' || c.kind === 'bee') c.y = clamp(c.y, 8, groundY - 10);
+    }
+  }
+
+  // Clicking scatters whatever is nearby, the way a real terrarium reacts.
+  canvas.addEventListener('click', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    for (const c of creatures) {
+      if (Math.hypot(c.x - mx, c.y - my) > 70) continue;
+      const away = Math.atan2(c.y - my, c.x - mx);
+      if (c.kind === 'butterfly') {
+        c.mode = 'fly'; c.flower = null;
+        c.vx += Math.cos(away) * 1.6; c.vy += Math.sin(away) * 1.6;
+        c.tx = clamp(c.x + Math.cos(away) * 90, 12, W - 12);
+        c.ty = clamp(c.y + Math.sin(away) * 90, 10, groundY - 25);
+      } else if (c.kind === 'bee') {
+        c.mode = 'fly'; c.flower = null;
+        c.tx = clamp(c.x + Math.cos(away) * 90, 12, W - 12);
+        c.ty = clamp(c.y + Math.sin(away) * 90, 10, groundY - 20);
+      } else if (c.kind === 'grasshopper') {
+        c.dir = c.x < mx ? -1 : 1;
+        c.mode = 'jump';
+        c.vx = c.dir * rand(2.6, 4.2);
+        c.vy = -rand(5.4, 7);
+      } else if (c.kind === 'ladybug') {
+        c.dir = c.x < mx ? -1 : 1;
+        c.mode = 'walk'; c.timer = rand(2, 4); c.speed = rand(0.5, 0.8);
+      } else if (c.kind === 'caterpillar') {
+        c.dir = c.x < mx ? -1 : 1;
+        c.rate = 6.5; c.timer = rand(3, 6);
+        setTimeout(() => { c.rate = rand(3.2, 4.6); }, 2500);
+      }
+    }
+  });
+
+  canvas.addEventListener('dblclick', (e) => {
+    const r = canvas.getBoundingClientRect();
+    creatures.push(makeButterfly(e.clientX - r.left, e.clientY - r.top));
+  });
+
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop(); else start();
+  });
+
+  window.addEventListener('message', (ev) => {
+    const m = ev.data || {};
+    if (m.type === 'config') {
+      Object.assign(cfg, m.config || {});
+      buildScene();
+      populate();
+    } else if (m.type === 'toggleMotion') {
+      running = !running;
+    } else if (m.type === 'add') {
+      const f = FACTORY[m.kind];
+      if (f) creatures.push(f());
+    } else if (m.type === 'reset') {
+      buildScene();
+      populate();
+    } else if (m.type === 'visibility') {
+      visible = !!m.visible;
+      if (visible) start(); else stop();
+    }
+  });
+
+  function detectTheme() {
+    const cls = document.body.className || '';
+    dark = !/vscode-light|vscode-high-contrast-light/.test(cls);
+    P = palette();
+  }
+  new MutationObserver(() => {
+    const before = dark;
+    detectTheme();
+    if (before !== dark) buildScene();
+  }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+  detectTheme();
+  resize();
+  populate();
+  start();
+  vscode.postMessage({ type: 'ready' });
+})();
+</script>
+</body>
+</html>

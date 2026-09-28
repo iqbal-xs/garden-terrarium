@@ -1,0 +1,228 @@
+{
+  "name": "garden-terrarium",
+  "displayName": "Garden Terrarium",
+  "description": "A living garden across your whole editor: creatures roam the status bar, crawl over your code, and flutter in the Explorer, panel and sidebar.",
+  "version": "0.2.0",
+  "publisher": "WPShark",
+  "author": {
+    "name": "WPShark"
+  },
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1B4A35",
+    "theme": "dark"
+  },
+  "keywords": [
+    "garden",
+    "butterfly",
+    "pets",
+    "fun",
+    "animation",
+    "status bar",
+    "relax",
+    "ambient",
+    "terrarium",
+    "cozy"
+  ],
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gardenTerrarium",
+          "title": "Garden",
+          "icon": "media/leaf.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "gardenTerrariumPanel",
+          "title": "Garden",
+          "icon": "media/leaf.svg"
+        }
+      ]
+    },
+    "views": {
+      "gardenTerrarium": [
+        {
+          "type": "webview",
+          "id": "gardenTerrarium.view",
+          "name": "Terrarium"
+        }
+      ],
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "gardenTerrarium.explorer",
+          "name": "Garden"
+        }
+      ],
+      "gardenTerrariumPanel": [
+        {
+          "type": "webview",
+          "id": "gardenTerrarium.panel",
+          "name": "Terrarium"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gardenTerrarium.toggleMotion",
+        "title": "Pause / Resume All Motion",
+        "category": "Garden"
+      },
+      {
+        "command": "gardenTerrarium.addCreature",
+        "title": "Release a New Creature",
+        "category": "Garden"
+      },
+      {
+        "command": "gardenTerrarium.reset",
+        "title": "Reset Terrarium",
+        "category": "Garden"
+      },
+      {
+        "command": "gardenTerrarium.shoo",
+        "title": "Shoo the Status Bar Creatures",
+        "category": "Garden"
+      },
+      {
+        "command": "gardenTerrarium.toggleStatusBar",
+        "title": "Toggle Status Bar Creatures",
+        "category": "Garden"
+      },
+      {
+        "command": "gardenTerrarium.toggleEditorCreatures",
+        "title": "Toggle Creatures On My Code",
+        "category": "Garden"
+      }
+    ],
+    "configuration": {
+      "title": "Garden Terrarium",
+      "properties": {
+        "gardenTerrarium.butterflies": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Butterflies in the garden panels."
+        },
+        "gardenTerrarium.grasshoppers": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Grasshoppers in the garden panels."
+        },
+        "gardenTerrarium.caterpillars": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Caterpillars in the garden panels."
+        },
+        "gardenTerrarium.ladybugs": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Ladybugs in the garden panels."
+        },
+        "gardenTerrarium.bees": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Bees in the garden panels."
+        },
+        "gardenTerrarium.fireflies": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show drifting fireflies / pollen motes in the garden panels."
+        },
+        "gardenTerrarium.speed": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.2,
+          "maximum": 3,
+          "description": "Global speed multiplier."
+        },
+        "gardenTerrarium.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let creatures wander across the status bar."
+        },
+        "gardenTerrarium.statusBar.alignment": {
+          "type": "string",
+          "default": "both",
+          "enum": [
+            "left",
+            "right",
+            "both"
+          ],
+          "description": "Which end(s) of the status bar the creatures roam."
+        },
+        "gardenTerrarium.statusBar.width": {
+          "type": "number",
+          "default": 18,
+          "minimum": 6,
+          "maximum": 60,
+          "description": "How many cells wide each status bar strip is."
+        },
+        "gardenTerrarium.statusBar.maxCreatures": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum creatures visible per status bar strip at once."
+        },
+        "gardenTerrarium.statusBar.tickMs": {
+          "type": "number",
+          "default": 140,
+          "minimum": 60,
+          "maximum": 1000,
+          "description": "Status bar animation interval in milliseconds. Higher = calmer and cheaper."
+        },
+        "gardenTerrarium.editor.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let creatures crawl around the open editor, in the empty space to the right of your code."
+        },
+        "gardenTerrarium.editor.maxCreatures": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum creatures crawling on each visible editor."
+        },
+        "gardenTerrarium.editor.tickMs": {
+          "type": "number",
+          "default": 200,
+          "minimum": 80,
+          "maximum": 2000,
+          "description": "Editor creature animation interval in milliseconds."
+        },
+        "gardenTerrarium.editor.pauseWhileTyping": {
+          "type": "boolean",
+          "default": true,
+          "description": "Creatures freeze and hide for a moment while you are typing, so they never distract."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx @vscode/vsce package",
+    "publish": "npx @vscode/vsce publish"
+  }
+}
